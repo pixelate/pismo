@@ -1,3 +1,5 @@
+require 'active_support/core_ext'
+
 module Pismo
   # Internal attributes are different pieces of data we can extract from a document's content
   module InternalAttributes
@@ -6,6 +8,7 @@ module Pismo
       # TODO: Memoizations
       title = @doc.match( 
                           [
+                            '#contentTitle', # pocketgamer.co.uk
                             '#pname a',                                                       # Google Code style
                             '.entryheader h1',                                                # Ruby Inside/Kubrick
                             '.entry-title a',                                               # Common Blogger/Blogspot rules
@@ -73,7 +76,7 @@ module Pismo
     # Return an estimate of when the page/content was created
     # As clients of this library should be doing HTTP retrieval themselves, they can fall to the
     # Last-Updated HTTP header if they so wish. This method is just rough and based on content only.
-    def datetime
+    def date
       # TODO: Clean all this mess up
       
       mo = %r{(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|January|February|March|April|May|June|July|August|September|October|November|December)}i
@@ -107,12 +110,14 @@ module Pismo
       datetime.gsub!(/\,/, '')
       datetime.sub!(/(\d+)(th|st|rd)/, '\1')
       
-      Chronic.parse(datetime) || datetime
+      dt = Chronic.parse(datetime) || datetime
+      dt.to_date
     end
     
     # Returns the author of the page/content
     def author(all = false)
       author = @doc.match([
+                          ['#content .post small', lambda { |el| el.text[/by(.*)in/,1] }], # toucharcade.com        
                           '.post-author .fn',
                           '.wire_author',
                           '.cnnByline b',
@@ -142,7 +147,9 @@ module Pismo
                           'cite a',
                           'cite',
                           '.contributor_details h4 a',
-                          '.meta a'
+                          '.meta a',
+                          'td div b a' # pocketgamer.co.uk
+                                                  
                           ], all)
                           
       return unless author
@@ -166,18 +173,12 @@ module Pismo
       author(true)
     end
     
-    
-    # Returns the "description" of the page, usually comes from a meta tag
-    def description
-      @doc.match([
-                  ['meta[@name="description"]', lambda { |el| el.attr('content') }],
-                  ['meta[@name="Description"]', lambda { |el| el.attr('content') }],
-                  ['meta[@name="DESCRIPTION"]', lambda { |el| el.attr('content') }],
-                  'rdf:Description[@name="dc:description"]',
-                  '.description'
-       ])
+    def score
+      score = @doc.match([
+          ['#story-review-summary .module .content img', lambda { |el| el.attr('alt') }] # slidetoplay.com
+      ], true)
     end
-    
+        
     # Returns the "lede(s)" or first paragraph(s) of the story/page
     def lede(all = false)
       lede = @doc.match([ 
@@ -229,35 +230,6 @@ module Pismo
     # Returns any images with absolute URLs in the document
     def images(limit = 3)
       reader_doc && !reader_doc.images.empty? ? reader_doc.images(limit) : nil
-    end
-    
-    # Returns the "keywords" in the document (not the meta keywords - they're next to useless now)
-    def keywords(options = {})
-      options = { :stem_at => 20, :word_length_limit => 15, :limit => 20, :remove_stopwords => true, :minimum_score => 2 }.merge(options)
-      
-      words = {}
-      
-      # Convert doc to lowercase, scrub out most HTML tags, then keep track of words
-      cached_title = title.to_s
-      content_to_use = body.to_s.downcase + " " + description.to_s.downcase
-
-      # old regex for safe keeping -- \b[a-z][a-z\+\.\'\+\#\-]*\b
-      content_to_use.downcase.gsub(/\<[^\>]{1,100}\>/, '').gsub(/\.+\s+/, ' ').gsub(/\&\w+\;/, '').scan(/(\b|\s|\A)([a-z0-9][a-z0-9\+\.\'\+\#\-\\]*)(\b|\s|\Z)/i).map{ |ta1| ta1[1] }.compact.each do |word|
-        next if word.length > options[:word_length_limit]
-        word.gsub!(/^[\']/, '')
-        word.gsub!(/[\.\-\']$/, '')
-        next if options[:hints] && !options[:hints].include?(word)
-        words[word] ||= 0
-        words[word] += (cached_title.downcase =~ /\b#{word}\b/ ? 5 : 1)
-      end
-
-      # Stem the words and stop words if necessary
-      d = words.keys.uniq.map { |a| a.length > options[:stem_at] ? a.stem : a }
-      s = Pismo.stopwords.map { |a| a.length > options[:stem_at] ? a.stem : a }
-
-      words.delete_if { |k1, v1| v1 < options[:minimum_score] }
-      words.delete_if { |k1, v1| s.include?(k1) } if options[:remove_stopwords]
-      words.sort_by { |k2, v2| v2 }.reverse.first(options[:limit])
     end
     
     def reader_doc
